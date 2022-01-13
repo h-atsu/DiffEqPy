@@ -1,5 +1,5 @@
 from numpy.lib.stride_tricks import broadcast_to
-from DiffEqPy.core import Variable, Function, as_variable
+from DiffEqPy.core import Variable, Function, as_variable, as_array
 from DiffEqPy import utils
 import numpy as np
 
@@ -23,8 +23,8 @@ class Exp(Function):
         return np.exp(x)
 
     def backward(self, gy):
-        x = self.inputs
-        gx = np.exp(x) * gy
+        y = self.outputs[0]()
+        gx = y * gy
         return gx
 
 
@@ -149,7 +149,7 @@ class Sum(Function):
             gy, self.x_shape, self.axis, self.keepdims)
 
         # 勾配gyをinput.shapeの形分コピーして戻す
-        gx = broadcast_to(gy, self, self.x_shape)
+        gx = broadcast_to(gy,  self.x_shape)
         return gx
 
 
@@ -329,16 +329,62 @@ def clip(x, x_min, x_max):
     return Clip(x_min, x_max)(x)
 
 
+class Softmax(Function):
+    def __init__(self, axis=1):
+        self.axis = axis
+
+    def forward(self, x):
+        y = x - x.max(axis=self.axis, keepdims=True)
+        y = np.exp(y)
+        y /= y.sum(axis=self.axis, keepdims=True)
+        return y
+
+    def backward(self, gy):
+        y = self.outputs[0]()
+        gx = y * gy
+        sumdx = gx.sum(axis=self.axis, keepdims=True)
+        gx -= y * sumdx
+        return gx
+
+
+def softmax(x, axis=1):
+    return Softmax(axis)(x)
+
+
 def softmax_cross_entropy_simple(x, t):
     x, t = as_variable(x), as_variable(t)
-    N = x.shape[0]  # number of data
-
-    p = softmax_simple(x)
-    p = clip(p, 1e-15, 1.)
+    N = x.shape[0]
+    p = softmax(x)
+    p = clip(p, 1e-15, 1.0)  # To avoid log(0)
     log_p = log(p)
     tlog_p = log_p[np.arange(N), t.data]
     y = -1 * sum(tlog_p) / N
     return y
+
+
+def accuracy(y, t):
+    y, t = as_variable(y), as_variable(t)
+
+    pred = y.data.argmax(axis=1).reshape(t.shape)
+    result = (pred == t.data)
+    acc = result.mean()
+    return Variable(as_array(acc))
+
+
+class ReLU(Function):
+    def forward(self, x):
+        y = np.maximum(x, 0.)
+        return y
+
+    def backward(self, gy):
+        x, = self.inputs
+        mask = x.data > 0
+        gx = gy * mask
+        return gx
+
+
+def relu(x):
+    return ReLU()(x)
 
 
 """ class Softmax(Function):

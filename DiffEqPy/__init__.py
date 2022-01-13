@@ -8,4 +8,5 @@ from DiffEqPy.core import as_variable
 from DiffEqPy.core import setup_variable
 from DiffEqPy.layers import Layer
 from DiffEqPy.models import Model
+from DiffEqPy.dataloaders import DataLoader
 setup_variable()

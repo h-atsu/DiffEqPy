@@ -1,53 +1,85 @@
-from DiffEqPy import Variable
+from DiffEqPy import Variable, DataLoader
 from DiffEqPy.functions import *
 from DiffEqPy.utils import *
 from DiffEqPy.layers import *
 from DiffEqPy.models import MLP
+from DiffEqPy.optimizers import SGD
+from DiffEqPy.datasets import *
+import DiffEqPy
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 
 
-np.random.seed(0)
-x = np.random.rand(100,1)
-#y = 5 + 2*x + np.random.rand(100,1)
-y = np.sin(2*np.pi*x) + np.random.rand(100,1)/10
+def f(x):
+    x = x.flatten()
+    x = x.astype(np.float32)
+    x /= 255.
+    return x
 
 
-model = MLP((10,10,1))
+batch_size = 100
+max_epoch = 10
+hidden_size = 1000
+
+train_set = MNIST(train = True, transform=f)
+test_set = MNIST(train = False, transform=f)
+train_loader = DataLoader(train_set , batch_size)
+test_loader = DataLoader(test_set , batch_size, shuffle=False)
+
+model = MLP((hidden_size, hidden_size,10))
+#model = MLP((hidden_size, hidden_size,10), activation=F.relu)
+optimizer = SGD().setup(model)
 
 
-t = np.linspace(0,1).reshape(-1,1)
+x = np.array([val[0] for val in train_set])
+t = np.array([val[1] for val in train_set])
 
 
-y_pred = model(t)
-plt.plot(np.linspace(0,1), y_pred.data, c='r')
-plt.scatter(x,y)
-#plt.ylim(y.min()-0.1,y.max()+0.1)
-#plt.xlim(x.min()-0.1,x.max()+0.1)
+ret = {}
+ret["train_loss"] = []
+ret["test_loss"] = []
+ret["train_accuracy"] = []
+ret["test_accuracy"] = []
+
+for epoch in range(max_epoch):
+    sum_loss, sum_acc = 0, 0    
+    
+    for x,t in train_loader:
+        y = model(x)
+        loss = F.softmax_cross_entropy_simple(y, t)
+        acc = F.accuracy(y, t)
+        model.cleargrads()
+        loss.backward()
+        optimizer.update()
+        
+        sum_loss += float(loss.data) * len(t)
+        sum_acc += float(acc.data) * len(t)
+        
+    print("epoch get_ipython().run_line_magic("d", " \" % (epoch+1))")
+    print("train loss: {:.4f}, accuracy: {:.4f}".format(sum_loss / len(train_set), sum_acc / len(train_set)))
+    ret["train_loss"].append(sum_loss / len(train_set))
+    ret["train_accuracy"].append(sum_acc / len(train_set))
+        
+    sum_loss, sum_acc = 0,0
+    with DiffEqPy.no_grad():
+        for x,t in test_loader:
+            y = model(x)
+            loss = F.softmax_cross_entropy_simple(y, t)
+            acc = F.accuracy(y,t)
+            sum_loss += float(loss.data) * len(t)
+            sum_acc += float(acc.data) * len(t)
+    print("test loss: {:.4f}, accuracy: {:.4f}".format(sum_loss / len(test_set), sum_acc / len(test_set)))
+    ret["test_loss"].append(sum_loss / len(test_set))
+    ret["test_accuracy"].append(sum_acc / len(test_set))
 
 
-lr = 0.1
-loss_his = []
-for i in range(20000):
-    y_pred = model(x)
-    loss = mean_squared_error(y_pred, y)
-    loss_his.append(loss.data)
-    model.cleargrads()    
-    loss.backward()
-    for p in model.params():
-        p.data -= lr * p.grad.data
+plt.plot(ret["train_loss"])
+plt.plot(ret["test_loss"])
 
 
-plt.plot(loss_his)
+plt.plot(ret["train_accuracy"])
+plt.plot(ret["test_accuracy"])
 
 
-plot_dot_graph(loss)
-
-
-y_pred = model(t)
-
-
-plt.plot(np.linspace(0,1), y_pred.data, c='r')
-plt.scatter(x,y)
-#plt.ylim(y.min()-0.1,y.max()+0.1)
-#plt.xlim(x.min()-0.1,x.max()+0.1)
+model.plot(x)
