@@ -78,7 +78,7 @@ class Spiral(Dataset):
 
 
 # ===================================================
-# Toy datasets
+# MNIST-like dataset
 # ===================================================
 class MNIST(Dataset):
 
@@ -124,3 +124,41 @@ class MNIST(Dataset):
     @staticmethod
     def labels():
         return {0: '0', 1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9'}
+
+
+# ===================================================
+# Big datasets
+# ===================================================
+class ImageNet(Dataset):
+
+    def __init__(self):
+        NotImplemented
+
+    @staticmethod
+    def labels():
+        url = 'https://gist.githubusercontent.com/yrevar/942d3a0ac09ec9e5eb3a/raw/238f720ff059c1f82f368259d1ca4ffa5dd8f9f5/imagenet1000_clsidx_to_labels.txt'
+        path = get_file(url)
+        with open(path, 'r') as f:
+            labels = eval(f.read())
+        return labels
+
+
+# =============================================================================
+# Sequential datasets: SinCurve, Shapekspare
+# =============================================================================
+class SinCurve(Dataset):
+
+    def prepare(self):
+        num_data = 1000
+        dtype = np.float64
+
+        x = np.linspace(0, 2 * np.pi, num_data)
+        noise_range = (-0.05, 0.05)
+        noise = np.random.uniform(noise_range[0], noise_range[1], size=x.shape)
+        if self.train:
+            y = np.sin(x) + noise
+        else:
+            y = np.cos(x)
+        y = y.astype(dtype)
+        self.data = y[:-1][:, np.newaxis]
+        self.label = y[1:][:, np.newaxis]

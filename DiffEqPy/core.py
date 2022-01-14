@@ -3,13 +3,13 @@ import numpy as np
 import weakref
 from memory_profiler import profile
 import contextlib
-
 import DiffEqPy
 
 
 class Config:
     # only have class attribute
     enable_backprop = True
+    train = True
 
 
 @contextlib.contextmanager
@@ -22,13 +22,17 @@ def using_config(name, value):
         setattr(Config, name, old_value)
 
 
+def test_mode():
+    return using_config('train', False)
+
+
 def no_grad():
     return using_config('enable_backprop', False)
 
 
-def as_array(x):
+def as_array(x, array_module=np):
     if np.isscalar(x):
-        return np.array(x)
+        return array_module.array(x)
     return x
 
 
@@ -38,12 +42,19 @@ def as_variable(obj):
     return Variable(obj)
 
 
+try:
+    import cupy
+    array_types = (np.ndarray, cupy.ndarray)
+except ImportError:
+    array_types = (np.ndarray)
+
+
 class Variable:
     __array_priority__ = 200
 
     def __init__(self, data, name=None):
         if data is not None:
-            if not isinstance(data, np.ndarray):
+            if not isinstance(data, array_types):
                 raise TypeError("{} is not supporsed".format(type(data)))
         self.data = data
         self.name = name
@@ -52,6 +63,7 @@ class Variable:
         self.generation = 0
 
     # 関数だがあたかもインスタンス変数として振る舞う
+
     @property
     def shape(self):
         return self.data.shape
@@ -95,7 +107,7 @@ class Variable:
         if self.data is None:
             return 'variable(None)'
         # ' '*9は 'variable('の分空文字挿入する役割
-        p = str(self.data).replace('\n', '\n' + ' '*9)
+        p = str(self.data).replace('\n', '\n' + ' ' * 9)
         return 'variable(' + p + ')'
 
     def set_creator(self, func):
@@ -105,10 +117,19 @@ class Variable:
     def cleargrad(self):
         self.grad = None
 
+    def to_cpu(self):
+        if self.data is not None:
+            self.data = DiffEqPy.cuda.as_numpy(self.data)
+
+    def to_gpu(self):
+        if self.data is not None:
+            self.data = DiffEqPy.cuda.as_cupy(self.data)
+
     def backward(self, retain_grad=False, create_graph=False):
         # 自分の親関数を取得
         if self.grad is None:
-            self.grad = Variable(np.ones_like(self.data))
+            xp = DiffEqPy.cuda.get_array_module(self.data)
+            self.grad = Variable(xp.ones_like(self.data))
         funcs = []
         seen_set = set()
 
@@ -144,6 +165,19 @@ class Variable:
                 if not retain_grad:
                     for y in f.outputs:
                         y().grad = None
+
+    def unchain(self):
+        self.creator = None
+
+    def unchain_backward(self):
+        if self.creator is not None:
+            funcs = [self.creator]
+            while funcs:
+                f = funcs.pop()
+                for x in f.inputs:
+                    if x.creator is not None:
+                        funcs.append(x.creator)
+                        x.unchain()
 
 
 class Function:
@@ -207,6 +241,7 @@ class Add(Function):
 
 
 def add(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Add()(x0, as_array(x1))
 
 
@@ -219,10 +254,12 @@ class Sub(Function):
 
 
 def sub(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Sub()(x0, as_array(x1))
 
 
 def rsub(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Sub()(as_array(x1), x0)
 
 
@@ -233,10 +270,11 @@ class Mul(Function):
 
     def backward(self, gy):
         x0, x1 = self.inputs
-        return gy * x1,   gy * x0
+        return gy * x1, gy * x0
 
 
 def mul(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Mul()(x0, as_array(x1))
 
 
@@ -246,16 +284,18 @@ class Div(Function):
 
     def backward(self, gy):
         x0, x1 = self.inputs
-        gx0 = gy/x1
-        gx1 = gy*(-x0/x1**2)
+        gx0 = gy / x1
+        gx1 = gy * (-x0 / x1**2)
         return gx0, gx1
 
 
 def div(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Div()(x0, as_array(x1))
 
 
 def rdiv(x0, x1):
+    x1 = as_array(x1, DiffEqPy.cuda.get_array_module(x0.data))
     return Div()(as_array(x1), x0)
 
 
@@ -270,7 +310,7 @@ class Pow(Function):
     def backward(self, gy):
         x, = self.inputs
         c = self.c
-        gx = c * x**(c-1) * gy
+        gx = c * x**(c - 1) * gy
         return gx
 
 

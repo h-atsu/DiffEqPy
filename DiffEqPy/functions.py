@@ -1,6 +1,6 @@
-from numpy.lib.stride_tricks import broadcast_to
+import DiffEqPy
 from DiffEqPy.core import Variable, Function, as_variable, as_array
-from DiffEqPy import utils
+from DiffEqPy import utils, cuda
 import numpy as np
 
 
@@ -10,7 +10,7 @@ class Square(Function):
 
     def backward(self, gy):
         x = self.inputs
-        gx = 2*x*gy
+        gx = 2 * x * gy
         return gx
 
 
@@ -20,7 +20,8 @@ def square(x):
 
 class Exp(Function):
     def forward(self, x):
-        return np.exp(x)
+        xp = cuda.get_array_module(x)
+        return xp.exp(x)
 
     def backward(self, gy):
         y = self.outputs[0]()
@@ -34,7 +35,8 @@ def exp(x):
 
 class Log(Function):
     def forward(self, x):
-        y = np.log(x)
+        xp = cuda.get_array_module(x)
+        y = xp.log(x)
         return y
 
     def backward(self, gy):
@@ -49,11 +51,12 @@ def log(x):
 
 class Sin(Function):
     def forward(self, x):
-        return np.sin(x)
+        xp = cuda.get_array_module(x)
+        return xp.sin(x)
 
     def backward(self, gy):
         x, = self.inputs
-        gx = gy*cos(x)
+        gx = gy * cos(x)
         return gx
 
 
@@ -63,11 +66,12 @@ def sin(x):
 
 class Cos(Function):
     def forward(self, x):
-        return np.cos(x)
+        xp = cuda.get_array_module(x)
+        return xp.cos(x)
 
     def backward(self, gy):
         x, = self.inputs
-        gx = -gy*sin(x)
+        gx = -gy * sin(x)
         return gx
 
 
@@ -77,11 +81,13 @@ def cos(x):
 
 class Tanh(Function):
     def forward(self, x):
-        return np.tanh(x)
+        xp = cuda.get_array_module(x)
+        y = xp.tanh(x)
+        return y
 
     def backward(self, gy):
-        y = self.outputs[0]()
-        gx = gy*(1-y**2)
+        y = self.outputs[0]()  # weakref
+        gx = gy * (1 - y * y)
         return gx
 
 
@@ -95,18 +101,15 @@ class Reshape(Function):
 
     def forward(self, x):
         self.x_shape = x.shape
-        # これはnumpyのreshape関数が呼ばれている
         y = x.reshape(self.shape)
         return y
 
     def backward(self, gy):
-        # これはVariableのreshape関数が呼ばれている
         return reshape(gy, self.x_shape)
 
 
 def reshape(x, shape):
     if x.shape == shape:
-        # xとしてndarray or Variableインスタンスを想定
         return as_variable(x)
     return Reshape(shape)(x)
 
@@ -149,32 +152,12 @@ class Sum(Function):
             gy, self.x_shape, self.axis, self.keepdims)
 
         # 勾配gyをinput.shapeの形分コピーして戻す
-        gx = broadcast_to(gy,  self.x_shape)
+        gx = broadcast_to(gy, self.x_shape)
         return gx
 
 
 def sum(x, axis=0, keepdims=False):
     return Sum(axis, keepdims)(x)
-
-
-class BroadCastTo(Function):
-    def __init__(self, shape):
-        self.shape = shape
-
-    def forward(self, x):
-        self.x_shap = x.shape
-        y = np.broadcast_to(x, self.shape)
-        return y
-
-    def backward(self, gy):
-        gx = sum_to(gy, self.x_shape)
-        return gx
-
-
-def broadcast_to(x, shape):
-    if x.shape == shape:
-        return as_variable(x)
-    return BroadCastTo(shape)(x)
 
 
 class SumTo(Function):
@@ -197,6 +180,27 @@ def sum_to(x, shape):
     return SumTo(shape)(x)
 
 
+class BroadcastTo(Function):
+    def __init__(self, shape):
+        self.shape = shape
+
+    def forward(self, x):
+        self.x_shape = x.shape
+        xp = dezero.cuda.get_array_module(x)
+        y = xp.broadcast_to(x, self.shape)
+        return y
+
+    def backward(self, gy):
+        gx = sum_to(gy, self.x_shape)
+        return gx
+
+
+def broadcast_to(x, shape):
+    if x.shape == shape:
+        return as_variable(x)
+    return BroadcastTo(shape)(x)
+
+
 class MatMul(Function):
     def forward(self, x, W):
         y = x.dot(W)
@@ -216,14 +220,13 @@ def matmul(x, W):
 class MeanSquaredError(Function):
     def forward(self, x0, x1):
         diff = x0 - x1
-        y = (diff**2).sum() / len(diff)
+        y = (diff ** 2).sum() / len(diff)
         return y
 
     def backward(self, gy):
         x0, x1 = self.inputs
         diff = x0 - x1
-        gy = broadcast_to(gy, diff.shape)
-        gx0 = gy*diff*(2. / len(diff))
+        gx0 = gy * diff * (2. / len(diff))
         gx1 = -gx0
         return gx0, gx1
 
@@ -254,12 +257,13 @@ def linear(x, W, b=None):
 class Sigmoid(Function):
     def forward(self, x):
         #y = 1/ (1 + np.exp(-x))
-        y = np.tanh(x * 0.5) * 0.5 + 0.5
+        xp = cuda.get_array_module(x)
+        y = xp.tanh(x * 0.5) * 0.5 + 0.5
         return y
 
     def backward(self, gy):
         y = self.outputs[0]()
-        gx = gy*y*(1-y)
+        gx = gy * y * (1 - y)
         return gx
 
 
@@ -293,8 +297,14 @@ class GetItemGrad(Function):
         self.in_shape = in_shape
 
     def forward(self, gy):
-        gx = np.zeros(self.in_shape)
-        np.add.at(gx, self.slices, gy)
+        xp = cuda.get_array_module(gy)
+        gx = xp.zeros(self.in_shape, dtype=gy.dtype)
+
+        if xp is np:
+            np.add.at(gx, self.slices, gy)
+        else:
+            import cupyx
+            cupyx.scatter_add(gx, self.slices, gy)
         return gx
 
     def backward(self, ggx):
@@ -314,8 +324,8 @@ class Clip(Function):
         self.x_max = x_max
 
     def forward(self, x):
-        #xp = cuda.get_array_module(x)
-        y = np.clip(x, self.x_min, self.x_max)
+        xp = cuda.get_array_module(x)
+        y = xp.clip(x, self.x_min, self.x_max)
         return y
 
     def backward(self, gy):
@@ -330,64 +340,6 @@ def clip(x, x_min, x_max):
 
 
 class Softmax(Function):
-    def __init__(self, axis=1):
-        self.axis = axis
-
-    def forward(self, x):
-        y = x - x.max(axis=self.axis, keepdims=True)
-        y = np.exp(y)
-        y /= y.sum(axis=self.axis, keepdims=True)
-        return y
-
-    def backward(self, gy):
-        y = self.outputs[0]()
-        gx = y * gy
-        sumdx = gx.sum(axis=self.axis, keepdims=True)
-        gx -= y * sumdx
-        return gx
-
-
-def softmax(x, axis=1):
-    return Softmax(axis)(x)
-
-
-def softmax_cross_entropy_simple(x, t):
-    x, t = as_variable(x), as_variable(t)
-    N = x.shape[0]
-    p = softmax(x)
-    p = clip(p, 1e-15, 1.0)  # To avoid log(0)
-    log_p = log(p)
-    tlog_p = log_p[np.arange(N), t.data]
-    y = -1 * sum(tlog_p) / N
-    return y
-
-
-def accuracy(y, t):
-    y, t = as_variable(y), as_variable(t)
-
-    pred = y.data.argmax(axis=1).reshape(t.shape)
-    result = (pred == t.data)
-    acc = result.mean()
-    return Variable(as_array(acc))
-
-
-class ReLU(Function):
-    def forward(self, x):
-        y = np.maximum(x, 0.)
-        return y
-
-    def backward(self, gy):
-        x, = self.inputs
-        mask = x.data > 0
-        gx = gy * mask
-        return gx
-
-
-def relu(x):
-    return ReLU()(x)
-
-
-""" class Softmax(Function):
     def __init__(self, axis=1):
         self.axis = axis
 
@@ -407,4 +359,90 @@ def relu(x):
 
 
 def softmax(x, axis=1):
-    return Softmax(axis)(x)     """
+    return Softmax(axis)(x)
+
+
+class SoftmaxCrossEntropy(Function):
+    def forward(self, x, t):
+        N = x.shape[0]
+        log_z = utils.logsumexp(x, axis=1)
+        log_p = x - log_z
+        log_p = log_p[np.arange(N), t.ravel()]
+        y = -log_p.sum() / np.float32(N)
+        return y
+
+    def backward(self, gy):
+        x, t = self.inputs
+        N, CLS_NUM = x.shape
+
+        gy *= 1 / N
+        y = softmax(x)
+        # convert to one-hot
+        xp = cuda.get_array_module(t.data)
+        t_onehot = xp.eye(CLS_NUM, dtype=t.dtype)[t.data]
+        y = (y - t_onehot) * gy
+        return y
+
+
+def softmax_cross_entropy(x, t):
+    return SoftmaxCrossEntropy()(x, t)
+
+
+def accuracy(y, t):
+    y, t = as_variable(y), as_variable(t)
+
+    pred = y.data.argmax(axis=1).reshape(t.shape)
+    result = (pred == t.data)
+    acc = result.mean()
+    return Variable(as_array(acc))
+
+
+class ReLU(Function):
+    def forward(self, x):
+        xp = cuda.get_array_module(x)
+        y = xp.maximum(x, 0.)
+        return y
+
+    def backward(self, gy):
+        x, = self.inputs
+        mask = x.data > 0
+        gx = gy * mask
+        return gx
+
+
+def relu(x):
+    return ReLU()(x)
+
+
+def dropout(x, dropout_ratio=0.5):
+    x = as_variable(x)
+
+    if DiffEqPy.Config.train:
+        xp = cuda.get_array_module(x)
+        mask = xp.random.rand(*x.shape) > dropout_ratio
+        scale = xp.array(1. - dropout_ratio).astype(x.dtype)
+        y = x * mask / scale
+        return y
+    else:
+        return x
+
+
+# =============================================================================
+# conv2d / col2im / im2col / basic_math
+# =============================================================================
+from DiffEqPy.core import pow
+from DiffEqPy.core import neg
+from DiffEqPy.core import div
+from DiffEqPy.core import mul
+from DiffEqPy.core import rsub
+from DiffEqPy.core import sub
+from DiffEqPy.core import add
+from DiffEqPy.functions_conv import average_pooling
+from DiffEqPy.functions_conv import pooling
+from DiffEqPy.functions_conv import pooling_simple
+from DiffEqPy.functions_conv import col2im
+from DiffEqPy.functions_conv import im2col
+from DiffEqPy.functions_conv import conv2d_simple
+from DiffEqPy.functions_conv import deconv2d
+from DiffEqPy.functions_conv import conv2d
+from numpy.lib.stride_tricks import broadcast_to
